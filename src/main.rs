@@ -7,7 +7,7 @@ use i3_ipc::{
     event::{Event, Subscribe},
     I3Stream, msg::Msg, I3, Connect,
 };
-use xrandr::XHandle;
+use xrandr::{XHandle, Output};
 
 struct MonitorData {
     name: String,
@@ -44,9 +44,16 @@ impl MonitorPos {
     }
 }
 
+fn xrandr_outputs() -> Vec<Output> {
+    let outputs = (|| {
+        let mut handle = XHandle::open()?;
+        handle.all_outputs()
+    })();
+    outputs.unwrap_or(vec![])
+}
+
 fn monitor_connected(name: &str) -> bool {
-    let mut handle = XHandle::open().unwrap();
-    let outputs = handle.all_outputs().unwrap();
+    let outputs = xrandr_outputs();
     for output in outputs {
         if output.name == name {
             let connected = output.edid().is_some();
@@ -72,7 +79,7 @@ fn get_focused_workspace(i3: &mut I3Stream) -> Option<i32> {
 fn focus(i3: &mut I3Stream, num: i32) {
     let command = format!("workspace {}", num);
     if let Err(error) = i3.send_msg(Msg::RunCommand, &command) {
-        eprintln!("Cannot move workspace: {}", error);
+        eprintln!("Cannot focus workspace: {}", error);
     }
 }
 
@@ -85,8 +92,8 @@ fn main() -> io::Result<()> {
 
     let workspaces = Arc::new(DashMap::new());
 
-    let mut i3 = I3Stream::conn_sub(&[Subscribe::Window, Subscribe::Workspace]).unwrap();
-    if let Ok(i3_workspaces) = i3.get_workspaces() {
+    let i3 = I3::connect();
+    if let Ok(i3_workspaces) = i3.and_then(|mut i3| i3.get_workspaces()) {
         for workspace in &i3_workspaces {
             let num = workspace.num;
             workspaces.insert(num, Workspace {
@@ -102,8 +109,7 @@ fn main() -> io::Result<()> {
     let adjust_workspaces = {
         let workspaces = Arc::clone(&workspaces);
         move || {
-            let mut i3 = I3::connect().unwrap();
-            if let Ok(i3_workspaces) = i3.get_workspaces() {
+            if let Ok(i3_workspaces) = I3::connect().and_then(|mut i3| i3.get_workspaces()) {
                 for workspace in &i3_workspaces {
                     let num = workspace.num;
 
@@ -138,14 +144,16 @@ fn main() -> io::Result<()> {
     std::thread::spawn({
         let adjust_workspaces = adjust_workspaces.clone();
         move || {
-            for event in i3.listen() {
-                if let Ok(event) = event {
-                    match event {
-                        Event::Workspace(_) => {
-                            adjust_workspaces();
-                        },
-                        Event::Output(_) | Event::Window(_) | Event::Mode(_) | Event::BarConfig(_) | Event::Binding(_) |
-                            Event::Shutdown(_) | Event::Tick(_) => (),
+            if let Ok(mut i3) = I3Stream::conn_sub(&[Subscribe::Window, Subscribe::Workspace]) {
+                for event in i3.listen() {
+                    if let Ok(event) = event {
+                        match event {
+                            Event::Workspace(_) => {
+                                adjust_workspaces();
+                            },
+                            Event::Output(_) | Event::Window(_) | Event::Mode(_) | Event::BarConfig(_) | Event::Binding(_) |
+                                Event::Shutdown(_) | Event::Tick(_) => (),
+                        }
                     }
                 }
             }
@@ -164,17 +172,22 @@ fn main() -> io::Result<()> {
                 // Since i3 creates empty workspaces, make a list of existing workspaces to avoid
                 // focusing unexisting workspaces later.
                 let mut existing_workspaces = vec![];
-                let mut i3 = I3::connect().unwrap();
-                if let Ok(i3_workspaces) = i3.get_workspaces() {
-                    for workspace in &i3_workspaces {
-                        existing_workspaces.push(workspace.num);
+                let focused_workspace = {
+                    if let Ok(mut i3) = I3::connect() {
+                        if let Ok(i3_workspaces) = i3.get_workspaces() {
+                            for workspace in &i3_workspaces {
+                                existing_workspaces.push(workspace.num);
+                            }
+                        }
+
+                        get_focused_workspace(&mut i3)
                     }
-                }
+                    else {
+                        None
+                    }
+                };
 
-                let focused_workspace = get_focused_workspace(&mut i3);
-
-                let mut handle = XHandle::open().unwrap();
-                let outputs = handle.all_outputs().unwrap();
+                let outputs = xrandr_outputs();
                 let mut monitor_data = vec![];
                 for output in outputs {
                     let connected = output.edid().is_some();
@@ -225,7 +238,14 @@ fn main() -> io::Result<()> {
 
                 timeout_add_once(Duration::from_millis(500), move || {
                     adjust_workspaces();
-                    let mut i3 = I3::connect().unwrap();
+                    let mut i3 =
+                        match I3::connect() {
+                            Ok(i3) => i3,
+                            Err(error) => {
+                                eprintln!("Error connecting to i3: {}", error);
+                                return;
+                            },
+                        };
 
                     // Move the workspaces to their previous monitor.
                     for workspace in workspaces.iter() {
