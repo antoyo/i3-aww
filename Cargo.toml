@@ -1,0 +1,11 @@
+[package]
+name = "i3-aww"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dashmap = "5.4.0"
+i3_ipc = "0.16.0"
+glib = "0.17.1"
+gudev = "0.13.0"
+xrandr = "0.1.1"
