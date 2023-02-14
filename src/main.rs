@@ -22,9 +22,11 @@ struct MonitorPos {
 
 #[derive(Debug)]
 struct Workspace {
+    focused: bool,
     num: i32,
     output: String,
     previous_output: Option<String>,
+    was_focused: bool,
 }
 
 impl MonitorPos {
@@ -56,7 +58,26 @@ fn monitor_connected(name: &str) -> bool {
     false
 }
 
+fn get_focused_workspace(i3: &mut I3Stream) -> Option<i32> {
+    if let Ok(i3_workspaces) = i3.get_workspaces() {
+        for workspace in &i3_workspaces {
+            if workspace.focused {
+                return Some(workspace.num);
+            }
+        }
+    }
+    None
+}
+
+fn focus(i3: &mut I3Stream, num: i32) {
+    let command = format!("workspace {}", num);
+    if let Err(error) = i3.send_msg(Msg::RunCommand, &command) {
+        eprintln!("Cannot move workspace: {}", error);
+    }
+}
+
 fn main() -> io::Result<()> {
+    // TODO: instead of taking those as cli arguments, infer them from the current xrandr config.
     let primary_monitor = "HDMI-1".to_string();
     let monitor_pos = "DVI-D-1:--right-of HDMI-1";
 
@@ -69,9 +90,11 @@ fn main() -> io::Result<()> {
         for workspace in &i3_workspaces {
             let num = workspace.num;
             workspaces.insert(num, Workspace {
+                focused: workspace.focused || workspace.visible,
                 num,
                 output: workspace.output.clone(),
                 previous_output: None,
+                was_focused: false,
             });
         }
     }
@@ -85,19 +108,26 @@ fn main() -> io::Result<()> {
                     let num = workspace.num;
 
                     let mut previous_output = None;
+                    let mut was_focused = false;
                     if let Some(old_workspace) = workspaces.get(&num) {
+                        // If there was no change, keep the old data.
                         if workspace.output == old_workspace.output {
                             previous_output = old_workspace.previous_output.clone();
+                            was_focused = old_workspace.was_focused;
                         }
+                        // If there was a change after the monitor was disconnected.
                         else if !monitor_connected(&old_workspace.output) {
                             previous_output = Some(old_workspace.output.clone());
+                            was_focused = old_workspace.focused;
                         }
                     }
 
                     let workspace = Workspace {
+                        focused: workspace.focused || workspace.visible,
                         num,
                         output: workspace.output.clone(),
                         previous_output,
+                        was_focused,
                     };
                     workspaces.insert(num, workspace);
                 }
@@ -131,6 +161,18 @@ fn main() -> io::Result<()> {
             let workspaces = Arc::clone(&workspaces);
             let adjust_workspaces = adjust_workspaces.clone();
             timeout_add_once(Duration::from_millis(500), move || {
+                // Since i3 creates empty workspaces, make a list of existing workspaces to avoid
+                // focusing unexisting workspaces later.
+                let mut existing_workspaces = vec![];
+                let mut i3 = I3::connect().unwrap();
+                if let Ok(i3_workspaces) = i3.get_workspaces() {
+                    for workspace in &i3_workspaces {
+                        existing_workspaces.push(workspace.num);
+                    }
+                }
+
+                let focused_workspace = get_focused_workspace(&mut i3);
+
                 let mut handle = XHandle::open().unwrap();
                 let outputs = handle.all_outputs().unwrap();
                 let mut monitor_data = vec![];
@@ -184,6 +226,8 @@ fn main() -> io::Result<()> {
                 timeout_add_once(Duration::from_millis(500), move || {
                     adjust_workspaces();
                     let mut i3 = I3::connect().unwrap();
+
+                    // Move the workspaces to their previous monitor.
                     for workspace in workspaces.iter() {
                         if let Some(ref output) = workspace.previous_output {
                             if monitor_connected(output) {
@@ -192,6 +236,19 @@ fn main() -> io::Result<()> {
                                     eprintln!("Cannot move workspace: {}", error);
                                 }
                             }
+                        }
+                    }
+
+                    // Make visible the right workspaces.
+                    for workspace in workspaces.iter() {
+                        if workspace.was_focused && existing_workspaces.contains(&workspace.num) {
+                            focus(&mut i3, workspace.num);
+                        }
+                    }
+
+                    if let Some(workspace) = focused_workspace {
+                        if existing_workspaces.contains(&workspace) {
+                            focus(&mut i3, workspace);
                         }
                     }
                 });
