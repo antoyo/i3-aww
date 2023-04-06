@@ -1,3 +1,13 @@
+/*
+ * FIXME: it doesn't always keep the focused (not only visible) workspace focused and visible when
+ * disconnecting a monitor.
+ * FIXME: uses 100% CPU (seems to happen when having multiple instances of i3-aww running).
+ * FIXME: if a workspace is empty, it won't be put back on the correct monitor.
+ * TODO: reset mouse position when plugging back the second monitor.
+ * TODO: if pressing on the active button on the KVM switch, it moves all the workspaces on one
+ * screen (possibly because we don't handle the case where the config change to the same config).
+ */
+
 use std::{io, time::Duration, process::Command, sync::Arc};
 
 use dashmap::DashMap;
@@ -85,8 +95,8 @@ fn focus(i3: &mut I3Stream, num: i32) {
 
 fn main() -> io::Result<()> {
     // TODO: instead of taking those as cli arguments, infer them from the current xrandr config.
-    let primary_monitor = "HDMI-1".to_string();
-    let monitor_pos = "DVI-D-1:--right-of HDMI-1";
+    let primary_monitor = "HDMI-A-0".to_string();
+    let monitor_pos = "DVI-D-0:--right-of HDMI-A-0";
 
     let monitor_pos = MonitorPos::parse(monitor_pos);
 
