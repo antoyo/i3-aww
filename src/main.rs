@@ -224,6 +224,8 @@ fn main() -> io::Result<()> {
                     command.arg(&monitor.name);
 
                     if monitor.connected {
+                        // TODO: also infer this from the current xrandr config to set the correct
+                        // resolution.
                         command.arg("--auto");
 
                         if let Some(ref monitor_pos) = monitor_pos {
